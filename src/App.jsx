@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { useDispatch, useSelector } from "react-redux";
 import { generateTest } from "./words";
 import { useSound } from "./useSound";
+import {
+  setSelectedMode,
+  setSelectedTime,
+  setSelectedWordCount,
+  toggleSound,
+} from "./store/settingsSlice";
 
-const TIME_MODES = [15, 30, 60, 120];
-const WORD_COUNT = 60;
+const TIME_MODES = [15, 30, 60];
+const WORD_MODES = [10, 25, 60];
 
 // Split sentence into words for word-based rendering
 function buildWords(sentence) {
@@ -11,17 +18,23 @@ function buildWords(sentence) {
 }
 
 function App() {
-  const [selectedTime, setSelectedTime] = useState(60);
-  const [sentence, setSentence] = useState(() => generateTest(WORD_COUNT));
+  const dispatch = useDispatch();
+  const selectedMode = useSelector((state) => state.settings.selectedMode);
+  const selectedTime = useSelector((state) => state.settings.selectedTime);
+  const selectedWordCount = useSelector(
+    (state) => state.settings.selectedWordCount,
+  );
+  const soundEnabled = useSelector((state) => state.settings.soundEnabled);
+
+  const [sentence, setSentence] = useState(() => generateTest(selectedWordCount));
   const [input, setInput] = useState("");
   const [startTime, setStartTime] = useState(null);
   const [wpm, setWpm] = useState(0);
   const [hasFinished, setHasFinished] = useState(false);
   const [liveWpm, setLiveWpm] = useState(0);
   const [accuracy, setAccuracy] = useState(100);
-  const [timeLeft, setTimeLeft] = useState(60);
+  const [timeLeft, setTimeLeft] = useState(selectedTime);
   const [timerRunning, setTimerRunning] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
   const [errors, setErrors] = useState(0);
   const [totalTyped, setTotalTyped] = useState(0);
   const [caretPos, setCaretPos] = useState({ top: 0, left: 0 });
@@ -29,22 +42,45 @@ function App() {
 
   const containerRef = useRef(null);
   const wordsRef = useRef(null);
-  const charRefs = useRef({}); // key: globalCharIndex → DOM span
+  const charRefs = useRef({}); // key: globalCharIndex -> DOM span
   const { playClick, playError } = useSound(soundEnabled);
 
   const words = buildWords(sentence);
 
-  // Global char index → word index + char index within word
-  const getWordAndCharIndex = useCallback((globalIndex) => {
-    let idx = 0;
-    for (let w = 0; w < words.length; w++) {
-      if (globalIndex < idx + words[w].length) {
-        return { wordIndex: w, charIndex: globalIndex - idx };
+  // Global char index -> word index + char index within word
+  const getWordAndCharIndex = useCallback(
+    (globalIndex) => {
+      let idx = 0;
+      for (let w = 0; w < words.length; w++) {
+        if (globalIndex < idx + words[w].length) {
+          return { wordIndex: w, charIndex: globalIndex - idx };
+        }
+        idx += words[w].length + 1; // +1 for space
       }
-      idx += words[w].length + 1; // +1 for space
-    }
-    return null;
-  }, [words]);
+      return null;
+    },
+    [words],
+  );
+
+  const startFreshTest = useCallback((nextTime, nextWordCount) => {
+    setInput("");
+    setStartTime(null);
+    setWpm(0);
+    setLiveWpm(0);
+    setAccuracy(100);
+    setHasFinished(false);
+    setTimeLeft(nextTime);
+    setTimerRunning(false);
+    setErrors(0);
+    setTotalTyped(0);
+    setSentence(generateTest(nextWordCount));
+    setErrorWordIndex(null);
+    setTimeout(() => containerRef.current?.focus(), 0);
+  }, []);
+
+  const resetTest = useCallback(() => {
+    startFreshTest(selectedTime, selectedWordCount);
+  }, [selectedTime, selectedWordCount, startFreshTest]);
 
   // Auto-focus on mount
   useEffect(() => {
@@ -60,7 +96,7 @@ function App() {
 
   // Timer countdown
   useEffect(() => {
-    if (!timerRunning || timeLeft === 0) return;
+    if (selectedMode !== "time" || !timerRunning || timeLeft === 0) return;
     const interval = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
@@ -73,7 +109,7 @@ function App() {
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [timerRunning, timeLeft]);
+  }, [selectedMode, timerRunning, timeLeft]);
 
   // WPM = correctly completed words / elapsed minutes
   const calcWpm = useCallback((typedInput, targetSentence, elapsed) => {
@@ -102,20 +138,28 @@ function App() {
 
   // Accuracy = correct keypresses / total keypresses
   useEffect(() => {
-    if (totalTyped === 0) { setAccuracy(100); return; }
+    if (totalTyped === 0) {
+      setAccuracy(100);
+      return;
+    }
     const correctPresses = totalTyped - errors;
     setAccuracy(((correctPresses / totalTyped) * 100).toFixed(1));
   }, [totalTyped, errors]);
 
   // Finish detection
   useEffect(() => {
-    if (!hasFinished && input === sentence) {
+    if (
+      !hasFinished
+      && startTime
+      && selectedMode === "words"
+      && input.length >= sentence.length
+    ) {
       const elapsedMinutes = (Date.now() - startTime) / 1000 / 60;
       setWpm(calcWpm(input, sentence, elapsedMinutes));
       setHasFinished(true);
       setTimerRunning(false);
     }
-  }, [input, sentence, startTime, hasFinished, calcWpm]);
+  }, [input, sentence, startTime, hasFinished, calcWpm, selectedMode]);
 
   // Final WPM on timer end
   useEffect(() => {
@@ -124,7 +168,7 @@ function App() {
       const finalWpm = calcWpm(input, sentence, elapsedMinutes);
       setWpm(finalWpm > 0 ? finalWpm : liveWpm);
     }
-  }, [hasFinished]); // eslint-disable-line
+  }, [hasFinished, startTime, input, sentence, liveWpm, calcWpm]);
 
   // Update caret position based on current char span
   useEffect(() => {
@@ -143,7 +187,11 @@ function App() {
   // Keydown handler
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); resetTest(); return; }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        resetTest();
+        return;
+      }
       if (hasFinished) return;
 
       if (e.key === "Backspace") {
@@ -154,11 +202,18 @@ function App() {
 
       if (!startTime) {
         setStartTime(Date.now());
-        setTimerRunning(true);
+        setTimerRunning(selectedMode === "time");
       }
-      if (input.length >= sentence.length) return;
 
-      const nextChar = sentence[input.length];
+      let activeSentence = sentence;
+      if (selectedMode === "words" && input.length >= activeSentence.length) return;
+      if (selectedMode === "time" && input.length >= activeSentence.length) {
+        activeSentence = `${activeSentence} ${generateTest(selectedWordCount)}`;
+        setSentence(activeSentence);
+      }
+      if (input.length >= activeSentence.length) return;
+
+      const nextChar = activeSentence[input.length];
       const isCorrect = e.key === nextChar;
       setTotalTyped((prev) => prev + 1);
 
@@ -174,90 +229,132 @@ function App() {
           setTimeout(() => setErrorWordIndex(null), 400);
         }
       }
+
       // Always advance cursor (wrong chars render red)
       setInput((prev) => prev + e.key);
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [input, hasFinished, startTime, sentence, playClick, playError, getWordAndCharIndex]);
+  }, [
+    input,
+    hasFinished,
+    startTime,
+    sentence,
+    selectedMode,
+    selectedWordCount,
+    playClick,
+    playError,
+    getWordAndCharIndex,
+    resetTest,
+  ]);
 
-  const resetTest = useCallback(() => {
-    setInput("");
-    setStartTime(null);
-    setWpm(0);
-    setLiveWpm(0);
-    setAccuracy(100);
-    setHasFinished(false);
-    setTimeLeft(selectedTime);
-    setTimerRunning(false);
-    setErrors(0);
-    setTotalTyped(0);
-    setSentence(generateTest(WORD_COUNT));
-    setErrorWordIndex(null);
-    setTimeout(() => containerRef.current?.focus(), 0);
-  }, [selectedTime]);
+  const handleModeSelect = (mode) => {
+    if (timerRunning || selectedMode === mode) return;
+    dispatch(setSelectedMode(mode));
+    startFreshTest(selectedTime, selectedWordCount);
+  };
 
   const handleTimeSelect = (t) => {
-    if (timerRunning) return;
-    setSelectedTime(t);
-    setTimeLeft(t);
-    // resetTest will pick up new selectedTime via useCallback dep
-    setInput("");
-    setStartTime(null);
-    setWpm(0);
-    setLiveWpm(0);
-    setAccuracy(100);
-    setHasFinished(false);
-    setTimerRunning(false);
-    setErrors(0);
-    setTotalTyped(0);
-    setSentence(generateTest(WORD_COUNT));
-    setTimeout(() => containerRef.current?.focus(), 0);
+    if (timerRunning || (selectedMode === "time" && selectedTime === t)) return;
+    dispatch(setSelectedMode("time"));
+    dispatch(setSelectedTime(t));
+    startFreshTest(t, selectedWordCount);
+  };
+
+  const handleWordCountSelect = (count) => {
+    if (timerRunning || (selectedMode === "words" && selectedWordCount === count)) return;
+    dispatch(setSelectedMode("words"));
+    dispatch(setSelectedWordCount(count));
+    startFreshTest(selectedTime, count);
   };
 
   const timerPercent = (timeLeft / selectedTime) * 100;
+  const typedWords = input.trim() ? input.trim().split(/\s+/).length : 0;
+  const typedWordsDisplay = Math.min(typedWords, selectedWordCount);
+  const wordsProgressPercent = Math.min((typedWords / selectedWordCount) * 100, 100);
+  const modeHint =
+    selectedMode === "time"
+      ? `time mode active - test ends in ${selectedTime}s`
+      : `words mode active - test ends at ${selectedWordCount} words`;
   const hasStarted = !!startTime;
 
-  // ── Results Screen ──────────────────────────────────────────────────────────
+  // -- Results Screen ----------------------------------------------------------
   if (hasFinished) {
     const finalWpm = wpm || liveWpm;
     const correctChars = input.split("").filter((c, i) => c === sentence[i]).length;
-    const incorrectChars = totalTyped - (totalTyped - errors); // = errors
     const grade =
-      finalWpm >= 100 ? { label: "S", color: "#e2b714" } :
-        finalWpm >= 80 ? { label: "A", color: "#4caf50" } :
-          finalWpm >= 60 ? { label: "B", color: "#2196f3" } :
-            finalWpm >= 40 ? { label: "C", color: "#ff9800" } :
-              { label: "D", color: "#ca4754" };
+      finalWpm >= 100
+        ? { label: "S", color: "#e2b714" }
+        : finalWpm >= 80
+          ? { label: "A", color: "#4caf50" }
+          : finalWpm >= 60
+            ? { label: "B", color: "#2196f3" }
+            : finalWpm >= 40
+              ? { label: "C", color: "#ff9800" }
+              : { label: "D", color: "#ca4754" };
 
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-10 px-4" style={{ background: "#0e0e0f" }}>
+      <div
+        className="min-h-screen flex flex-col items-center justify-center gap-10 px-4"
+        style={{ background: "#0e0e0f" }}
+      >
         {/* Logo */}
         <div className="flex items-center gap-2 absolute top-6 left-8">
-          <img src="/TypeShi_logo.png" alt="TypeShi" style={{ height: "28px", opacity: 0.7 }} />
-          <span className="font-mono font-bold text-lg" style={{ color: "#e2b714", opacity: 0.7 }}>TypeShi</span>
+          <img
+            src="/TypeShi_logo.png"
+            alt="TypeShi"
+            style={{ height: "28px", opacity: 0.7 }}
+          />
+          <span
+            className="font-mono font-bold text-lg"
+            style={{ color: "#e2b714", opacity: 0.7 }}
+          >
+            TypeShi
+          </span>
         </div>
 
         <div className="results-card flex flex-col items-center gap-8 w-full max-w-xl">
-          <p className="text-xs font-mono uppercase tracking-[0.3em]" style={{ color: "#646669" }}>— results —</p>
+          <p
+            className="text-xs font-mono uppercase tracking-[0.3em]"
+            style={{ color: "#646669" }}
+          >
+            - results -
+          </p>
 
           {/* WPM + Grade */}
           <div className="flex items-end gap-6">
             <div className="text-center">
-              <div className="font-mono font-bold" style={{ fontSize: "7rem", lineHeight: 1, color: "#e2b714" }}>
+              <div
+                className="font-mono font-bold"
+                style={{ fontSize: "7rem", lineHeight: 1, color: "#e2b714" }}
+              >
                 {finalWpm}
               </div>
-              <div className="text-sm font-mono mt-1" style={{ color: "#646669" }}>wpm</div>
+              <div className="text-sm font-mono mt-1" style={{ color: "#646669" }}>
+                wpm
+              </div>
             </div>
             <div className="mb-4 text-center">
-              <div className="font-mono font-bold text-5xl" style={{ color: grade.color }}>{grade.label}</div>
-              <div className="text-xs font-mono mt-1" style={{ color: "#646669" }}>grade</div>
+              <div className="font-mono font-bold text-5xl" style={{ color: grade.color }}>
+                {grade.label}
+              </div>
+              <div className="text-xs font-mono mt-1" style={{ color: "#646669" }}>
+                grade
+              </div>
             </div>
           </div>
 
           {/* WPM bar */}
-          <div className="w-full" style={{ background: "#1e1e20", borderRadius: "8px", height: "8px", overflow: "hidden" }}>
+          <div
+            className="w-full"
+            style={{
+              background: "#1e1e20",
+              borderRadius: "8px",
+              height: "8px",
+              overflow: "hidden",
+            }}
+          >
             <div
               style={{
                 height: "100%",
@@ -270,16 +367,30 @@ function App() {
           </div>
 
           {/* Stats row */}
-          <div className="grid grid-cols-4 gap-6 w-full font-mono text-center">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-6 w-full font-mono text-center">
             {[
+              { label: "mode", value: selectedMode, color: "#2196f3" },
               { label: "accuracy", value: `${accuracy}%`, color: "#e2b714" },
               { label: "correct", value: correctChars, color: "#4caf50" },
               { label: "incorrect", value: errors, color: "#ca4754" },
+              { label: "words", value: selectedWordCount, color: "#e2b714" },
               { label: "time", value: `${selectedTime}s`, color: "#e2b714" },
             ].map(({ label, value, color }) => (
-              <div key={label} className="flex flex-col gap-1" style={{ background: "#1e1e20", borderRadius: "10px", padding: "14px 8px" }}>
-                <span className="text-2xl font-bold" style={{ color }}>{value}</span>
-                <span className="text-xs" style={{ color: "#646669" }}>{label}</span>
+              <div
+                key={label}
+                className="flex flex-col gap-1"
+                style={{
+                  background: "#1e1e20",
+                  borderRadius: "10px",
+                  padding: "14px 8px",
+                }}
+              >
+                <span className="text-2xl font-bold" style={{ color }}>
+                  {value}
+                </span>
+                <span className="text-xs" style={{ color: "#646669" }}>
+                  {label}
+                </span>
               </div>
             ))}
           </div>
@@ -289,14 +400,37 @@ function App() {
             <button
               onClick={resetTest}
               className="font-mono font-semibold px-10 py-3 rounded-xl transition-all duration-200"
-              style={{ background: "#e2b714", color: "#0e0e0f", border: "none", cursor: "pointer", fontSize: "1rem" }}
-              onMouseEnter={e => { e.target.style.background = "#f0c830"; e.target.style.transform = "scale(1.04)"; }}
-              onMouseLeave={e => { e.target.style.background = "#e2b714"; e.target.style.transform = "scale(1)"; }}
+              style={{
+                background: "#e2b714",
+                color: "#0e0e0f",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "1rem",
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.background = "#f0c830";
+                e.target.style.transform = "scale(1.04)";
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = "#e2b714";
+                e.target.style.transform = "scale(1)";
+              }}
             >
               try again ↺
             </button>
             <p className="text-xs font-mono" style={{ color: "#3a3d42" }}>
-              press <kbd style={{ background: "#1e1e20", padding: "2px 6px", borderRadius: "4px", color: "#646669" }}>esc</kbd> to restart
+              press{" "}
+              <kbd
+                style={{
+                  background: "#1e1e20",
+                  padding: "2px 6px",
+                  borderRadius: "4px",
+                  color: "#646669",
+                }}
+              >
+                esc
+              </kbd>{" "}
+              to restart
             </p>
           </div>
         </div>
@@ -304,7 +438,7 @@ function App() {
     );
   }
 
-  // ── Main Typing Screen ───────────────────────────────────────────────────────
+  // -- Main Typing Screen ------------------------------------------------------
   return (
     <div
       tabIndex={0}
@@ -315,70 +449,214 @@ function App() {
       {/* Top Nav */}
       <nav className="w-full max-w-2xl flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <img src="/TypeShi_logo.png" alt="TypeShi" style={{ height: "28px", opacity: 0.85 }} />
-          <span className="font-mono font-bold text-lg" style={{ color: "#e2b714" }}>TypeShi</span>
+          <img
+            src="/TypeShi_logo.png"
+            alt="TypeShi"
+            style={{ height: "28px", opacity: 0.85 }}
+          />
+          <span className="font-mono font-bold text-lg" style={{ color: "#e2b714" }}>
+            TypeShi
+          </span>
         </div>
         <button
-          onClick={() => setSoundEnabled((p) => !p)}
+          onClick={() => dispatch(toggleSound())}
           title={soundEnabled ? "Mute sounds" : "Enable sounds"}
-          style={{ background: "none", border: "none", cursor: "pointer", fontSize: "1.2rem", opacity: 0.6, transition: "opacity 0.2s" }}
-          onMouseEnter={e => e.target.style.opacity = 1}
-          onMouseLeave={e => e.target.style.opacity = 0.6}
+          style={{
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            fontSize: "1.2rem",
+            opacity: 0.6,
+            transition: "opacity 0.2s",
+          }}
+          onMouseEnter={(e) => {
+            e.target.style.opacity = 1;
+          }}
+          onMouseLeave={(e) => {
+            e.target.style.opacity = 0.6;
+          }}
         >
           {soundEnabled ? "🔊" : "🔇"}
         </button>
       </nav>
 
-      {/* Time mode selector */}
-      <div className="flex items-center gap-1 p-1 rounded-xl font-mono text-sm" style={{ background: "#1a1a1c" }}>
-        {TIME_MODES.map((t) => (
-          <button
-            key={t}
-            onClick={() => handleTimeSelect(t)}
-            disabled={timerRunning}
-            className="px-5 py-1.5 rounded-lg transition-all duration-200 font-mono text-sm"
+      {/* Mode selectors */}
+      <div
+        className="w-full max-w-2xl rounded-2xl p-3 sm:p-4 flex flex-col gap-3"
+        style={{
+          background: "linear-gradient(180deg, #17181b 0%, #131416 100%)",
+          border: "1px solid #242428",
+          boxShadow: "0 12px 28px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div
+            className="flex items-center gap-1 p-1 rounded-xl font-mono text-sm"
+            style={{ background: "#0f1012", border: "1px solid #242428" }}
+          >
+            {[
+              { key: "words", label: "words mode" },
+              { key: "time", label: "time mode" },
+            ].map(({ key, label }) => (
+              <button
+                key={key}
+                onClick={() => handleModeSelect(key)}
+                disabled={timerRunning}
+                className="px-3 py-1.5 rounded-lg transition-all duration-200 font-mono text-xs uppercase tracking-wide"
+                style={{
+                  background: selectedMode === key ? "#e2b714" : "transparent",
+                  color: selectedMode === key ? "#0e0e0f" : "#8c8f94",
+                  border: "none",
+                  cursor: timerRunning ? "not-allowed" : "pointer",
+                  fontWeight: selectedMode === key ? "700" : "500",
+                  opacity: timerRunning && selectedMode !== key ? 0.35 : 1,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <p className="font-mono text-xs uppercase tracking-wide" style={{ color: "#7f8288" }}>
+            {modeHint}
+          </p>
+        </div>
+
+        <div className="w-full grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div
+            className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl font-mono text-sm"
             style={{
-              background: selectedTime === t ? "#e2b714" : "transparent",
-              color: selectedTime === t ? "#0e0e0f" : "#646669",
-              border: "none",
-              cursor: timerRunning ? "not-allowed" : "pointer",
-              fontWeight: selectedTime === t ? "700" : "400",
-              opacity: timerRunning && selectedTime !== t ? 0.3 : 1,
+              background: selectedMode === "words" ? "#1f2024" : "#141518",
+              border: selectedMode === "words" ? "1px solid #e2b714" : "1px solid #242428",
+              opacity: selectedMode === "words" ? 1 : 0.6,
             }}
           >
-            {t}s
-          </button>
-        ))}
+            <span className="text-xs uppercase tracking-wide" style={{ color: "#8c8f94" }}>
+              words
+            </span>
+            <div className="flex items-center justify-end gap-1 flex-wrap">
+              {WORD_MODES.map((count) => (
+                <button
+                  key={count}
+                  onClick={() => handleWordCountSelect(count)}
+                  disabled={timerRunning}
+                  className="min-w-12 px-3 py-1.5 rounded-lg transition-all duration-200 font-mono text-sm"
+                  style={{
+                    background: selectedWordCount === count ? "#e2b714" : "#202024",
+                    color: selectedWordCount === count ? "#0e0e0f" : "#8c8f94",
+                    border: "none",
+                    cursor: timerRunning ? "not-allowed" : "pointer",
+                    fontWeight: selectedWordCount === count ? "700" : "500",
+                    opacity: timerRunning && selectedWordCount !== count ? 0.35 : 1,
+                  }}
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div
+            className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl font-mono text-sm"
+            style={{
+              background: selectedMode === "time" ? "#1f2024" : "#141518",
+              border: selectedMode === "time" ? "1px solid #e2b714" : "1px solid #242428",
+              opacity: selectedMode === "time" ? 1 : 0.6,
+            }}
+          >
+            <span className="text-xs uppercase tracking-wide" style={{ color: "#8c8f94" }}>
+              time
+            </span>
+            <div className="flex items-center justify-end gap-1 flex-wrap">
+              {TIME_MODES.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => handleTimeSelect(t)}
+                  disabled={timerRunning}
+                  className="min-w-14 px-3 py-1.5 rounded-lg transition-all duration-200 font-mono text-sm"
+                  style={{
+                    background: selectedTime === t ? "#e2b714" : "#202024",
+                    color: selectedTime === t ? "#0e0e0f" : "#8c8f94",
+                    border: "none",
+                    cursor: timerRunning ? "not-allowed" : "pointer",
+                    fontWeight: selectedTime === t ? "700" : "500",
+                    opacity: timerRunning && selectedTime !== t ? 0.35 : 1,
+                  }}
+                >
+                  {t}s
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <p className="text-xs font-mono" style={{ color: "#666a70" }}>
+          {timerRunning
+            ? "mode settings are locked while the test is running"
+            : "tip: selecting a words or time value switches to that mode automatically"}
+        </p>
       </div>
 
-      {/* Stats bar — only visible after typing starts */}
+      {/* Stats bar -- only visible after typing starts */}
       <div
         className="flex gap-10 font-mono transition-all duration-500"
-        style={{ opacity: hasStarted ? 1 : 0, transform: hasStarted ? "translateY(0)" : "translateY(-8px)" }}
+        style={{
+          opacity: hasStarted ? 1 : 0,
+          transform: hasStarted ? "translateY(0)" : "translateY(-8px)",
+        }}
       >
         <div className="text-center">
-          <div className="font-bold" style={{ fontSize: "2rem", color: timeLeft <= 10 ? "#ca4754" : "#e2b714", lineHeight: 1 }}>
-            {timeLeft}
+          <div
+            className="font-bold"
+            style={{
+              fontSize: "2rem",
+              color:
+                selectedMode === "time" && timeLeft <= 10
+                  ? "#ca4754"
+                  : "#e2b714",
+              lineHeight: 1,
+            }}
+          >
+            {selectedMode === "time" ? timeLeft : `${typedWordsDisplay}/${selectedWordCount}`}
           </div>
-          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>time</div>
+          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>
+            {selectedMode === "time" ? "time" : "words"}
+          </div>
         </div>
         <div className="text-center">
-          <div className="font-bold" style={{ fontSize: "2rem", color: "#e2b714", lineHeight: 1 }}>{liveWpm}</div>
-          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>wpm</div>
+          <div className="font-bold" style={{ fontSize: "2rem", color: "#e2b714", lineHeight: 1 }}>
+            {liveWpm}
+          </div>
+          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>
+            wpm
+          </div>
         </div>
         <div className="text-center">
-          <div className="font-bold" style={{ fontSize: "2rem", color: "#e2b714", lineHeight: 1 }}>{accuracy}</div>
-          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>acc%</div>
+          <div className="font-bold" style={{ fontSize: "2rem", color: "#e2b714", lineHeight: 1 }}>
+            {accuracy}
+          </div>
+          <div className="text-xs mt-0.5" style={{ color: "#646669" }}>
+            acc%
+          </div>
         </div>
       </div>
 
       {/* Timer progress bar */}
-      <div className="w-full max-w-2xl rounded-full overflow-hidden" style={{ height: "2px", background: "#1e1e20", marginTop: hasStarted ? "0" : "-32px", transition: "margin 0.4s" }}>
+      <div
+        className="w-full max-w-2xl rounded-full overflow-hidden"
+        style={{
+          height: "2px",
+          background: "#1e1e20",
+          marginTop: hasStarted ? "0" : "-32px",
+          transition: "margin 0.4s",
+        }}
+      >
         <div
           className="h-full rounded-full"
           style={{
-            width: `${timerPercent}%`,
-            background: timeLeft <= 10 ? "#ca4754" : "#e2b714",
+            width: `${selectedMode === "time" ? timerPercent : wordsProgressPercent}%`,
+            background:
+              selectedMode === "time" && timeLeft <= 10 ? "#ca4754" : "#e2b714",
             transition: "width 1s linear, background 0.5s",
           }}
         />
@@ -388,7 +666,12 @@ function App() {
       <div
         ref={wordsRef}
         className="relative w-full max-w-2xl select-none"
-        style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "1.35rem", lineHeight: "2.6rem", color: "#3a3d42" }}
+        style={{
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: "1.35rem",
+          lineHeight: "2.6rem",
+          color: "#3a3d42",
+        }}
       >
         {/* Smooth sliding caret */}
         <div
@@ -424,14 +707,15 @@ function App() {
               {wordChars.map((char, charIndex) => {
                 const globalIndex = globalStart + charIndex;
                 const isTyped = globalIndex < input.length;
-                const isCurrent = globalIndex === input.length;
                 const isCorrect = isTyped && char === input[globalIndex];
                 const isWrong = isTyped && char !== input[globalIndex];
 
                 return (
                   <span
                     key={charIndex}
-                    ref={(el) => { charRefs.current[globalIndex] = el; }}
+                    ref={(el) => {
+                      charRefs.current[globalIndex] = el;
+                    }}
                     style={{
                       color: isCorrect ? "#d1d0c5" : isWrong ? "#ca4754" : "#3a3d42",
                       transition: "color 0.08s",
@@ -445,7 +729,9 @@ function App() {
               })}
               {/* Register space position for caret */}
               <span
-                ref={(el) => { charRefs.current[globalStart + wordChars.length] = el; }}
+                ref={(el) => {
+                  charRefs.current[globalStart + wordChars.length] = el;
+                }}
                 style={{ color: "transparent" }}
               >
                 {" "}
@@ -460,14 +746,35 @@ function App() {
         <button
           onClick={resetTest}
           className="font-mono text-sm px-6 py-2 rounded-lg transition-all duration-150"
-          style={{ background: "#1a1a1c", color: "#646669", border: "none", cursor: "pointer" }}
-          onMouseEnter={e => { e.currentTarget.style.color = "#e2b714"; e.currentTarget.style.background = "#222226"; }}
-          onMouseLeave={e => { e.currentTarget.style.color = "#646669"; e.currentTarget.style.background = "#1a1a1c"; }}
+          style={{
+            background: "#1a1a1c",
+            color: "#646669",
+            border: "none",
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "#e2b714";
+            e.currentTarget.style.background = "#222226";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "#646669";
+            e.currentTarget.style.background = "#1a1a1c";
+          }}
         >
           restart ↺
         </button>
         <p className="text-xs font-mono" style={{ color: "#2a2d30" }}>
-          <kbd style={{ background: "#1a1a1c", padding: "1px 5px", borderRadius: "3px", color: "#3a3d42" }}>esc</kbd> restart
+          <kbd
+            style={{
+              background: "#1a1a1c",
+              padding: "1px 5px",
+              borderRadius: "3px",
+              color: "#3a3d42",
+            }}
+          >
+            esc
+          </kbd>{" "}
+          restart
         </p>
       </div>
     </div>
