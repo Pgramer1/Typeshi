@@ -5,6 +5,7 @@ const DEFAULT_SETTINGS = {
   selectedTime: 60,
   selectedWordCount: 60,
   soundEnabled: true,
+  brainrotEnabled: false,
 };
 
 function loadSettings() {
@@ -27,6 +28,10 @@ function loadSettings() {
         typeof parsed.soundEnabled === "boolean"
           ? parsed.soundEnabled
           : DEFAULT_SETTINGS.soundEnabled,
+      brainrotEnabled:
+        typeof parsed.brainrotEnabled === "boolean"
+          ? parsed.brainrotEnabled
+          : DEFAULT_SETTINGS.brainrotEnabled,
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -49,6 +54,9 @@ const settingsSlice = createSlice({
     toggleSound(state) {
       state.soundEnabled = !state.soundEnabled;
     },
+    toggleBrainrot(state) {
+      state.brainrotEnabled = !state.brainrotEnabled;
+    },
   },
 });
 
@@ -57,6 +65,7 @@ export const {
   setSelectedTime,
   setSelectedWordCount,
   toggleSound,
+  toggleBrainrot,
 } = settingsSlice.actions;
 
 export default settingsSlice.reducer;
